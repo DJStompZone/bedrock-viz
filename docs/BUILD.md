@@ -17,15 +17,39 @@ Installing `zlib` through homebrew is not necessary because macOS already provid
 ### How to compile
 
 ```sh
-git clone --recursive https://github.com/bedrock-viz/bedrock-viz.git
-# patch
+set -e
+
+git clone --recursive https://github.com/djstompzone/bedrock-viz.git
 cd bedrock-viz
-git apply -p0 patches/leveldb-1.22.patch
-git apply -p0 patches/pugixml-disable-install.patch
-# make
-mkdir build && cd build
-cmake ..
-make
+
+git apply -p0 patches/leveldb-1.22.patch || true
+git apply -p0 patches/pugixml-disable-install.patch || true
+
+mkdir -p build
+cd build
+
+echo "[*] Trying build with system default compiler..."
+
+if cmake -DCMAKE_CXX_STANDARD=17 .. && make -j"$(nproc)"; then
+    echo "[+] Build succeeded with default compiler"
+else
+    echo "[!] Default build failed, attempting fallback to gcc-8..."
+
+    if command -v gcc-8 >/dev/null 2>&1 && command -v g++-8 >/dev/null 2>&1; then
+        rm -rf *
+        export CC=gcc-8
+        export CXX=g++-8
+
+        cmake -DCMAKE_CXX_STANDARD=17 ..
+        make -j"$(nproc)"
+
+        echo "[+] Build succeeded with gcc-8 fallback"
+    else
+        echo "[X] gcc-8 not available and default build failed."
+        echo "    You're gonna have to fix your toolchain instead of praying."
+        exit 1
+    fi
+fi
 ```
 
 If all goes well, there will be a "bedrock-viz" in `build/`
