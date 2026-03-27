@@ -118,6 +118,9 @@ function Invoke-ExternalCommand {
     try {
         & $FilePath @ArgumentList
         $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) {
+            $exitCode = 0
+        }
     } finally {
         Pop-Location
     }
@@ -204,6 +207,10 @@ function Install-VcpkgDependencies {
     $vcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
     $bootstrapBat = Join-Path $VcpkgRoot "bootstrap-vcpkg.bat"
 
+    if (-not (Test-Path (Join-Path $VcpkgRoot ".git"))) {
+        Write-WarnMsg "Heads up: vcpkg at '$VcpkgRoot' does not look like a git checkout. It might still work, but if it shits the bed, that's probably why."
+    }
+
     if (-not (Test-Path $vcpkgExe)) {
         if (-not (Test-Path $bootstrapBat)) {
             throw "Dang! vcpkg.exe is missing and bootstrap-vcpkg.bat was not found at $VcpkgRoot"
@@ -226,13 +233,7 @@ function Install-VcpkgDependencies {
     }
 
     Write-Info ("Installing missing vcpkg packages: {0}" -f ($missing -join ", "))
-    Invoke-ExternalCommand -FilePath $vcpkgExe -ArgumentList @("install") + $missing.ToArray() -WorkingDirectory $VcpkgRoot
-}
-
-function Ensure-CoreAutocrlfLf {
-    Write-Info "Setting git line-ending config for this build flow"
-    Invoke-ExternalCommand -FilePath "git" -ArgumentList @("config", "--global", "core.autocrlf", "false")
-    Invoke-ExternalCommand -FilePath "git" -ArgumentList @("config", "--global", "core.eol", "lf")
+    Invoke-ExternalCommand -FilePath $vcpkgExe -ArgumentList (@("install") + $missing.ToArray()) -WorkingDirectory $VcpkgRoot
 }
 
 function Ensure-Repository {
@@ -253,6 +254,14 @@ function Ensure-Repository {
 
     Write-Info "Cloning repository"
     Invoke-ExternalCommand -FilePath "git" -ArgumentList @("clone", "--recursive", $Url, $Directory)
+}
+
+function Set-RepositoryGitLineEndings {
+    param([Parameter(Mandatory = $true)][string]$RepoPath)
+
+    Write-Info "Setting repo-local git line-ending config so patching doesn't get all shitty"
+    Invoke-ExternalCommand -FilePath "git" -ArgumentList @("config", "core.autocrlf", "false") -WorkingDirectory $RepoPath
+    Invoke-ExternalCommand -FilePath "git" -ArgumentList @("config", "core.eol", "lf") -WorkingDirectory $RepoPath
 }
 
 function Apply-PatchIfNeeded {
@@ -289,22 +298,6 @@ function Apply-PatchIfNeeded {
     throw "Could not apply patch cleanly: $PatchPath"
 }
 
-function Get-CMakeGenerators {
-    $output = & cmake --help 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to query CMake generators."
-    }
-
-    return $output
-}
-
-function Test-CMakeGeneratorAvailable {
-    param([Parameter(Mandatory = $true)][string]$GeneratorName)
-
-    $helpText = Get-CMakeGenerators
-    return ($helpText -join "`n") -match [regex]::Escape($GeneratorName)
-}
-
 function Configure-And-Build {
     param(
         [Parameter(Mandatory = $true)][string]$SourceDir,
@@ -313,10 +306,6 @@ function Configure-And-Build {
         [Parameter(Mandatory = $true)][string]$ToolchainFile,
         [Parameter(Mandatory = $true)][string]$Config
     )
-
-    if (-not (Test-CMakeGeneratorAvailable -GeneratorName $Generator)) {
-        throw "OMG CMake generator not available: $Generator"
-    }
 
     $fullBuildDir = Join-Path $SourceDir $BuildDir
     if (-not (Test-Path $fullBuildDir)) {
@@ -336,7 +325,8 @@ function Configure-And-Build {
 
     $buildArgs = @(
         "--build", $fullBuildDir,
-        "--config", $Config
+        "--config", $Config,
+        "--parallel"
     )
 
     Write-Info "Building with generator: $Generator"
@@ -366,10 +356,10 @@ function Main {
         Write-WarnMsg "Skipping dependency installation checks"
     }
 
-    Ensure-CoreAutocrlfLf
     Ensure-Repository -Url $RepoUrl -Directory $RepoDir -NoClone:$SkipClone
 
     $repoPath = [System.IO.Path]::GetFullPath($RepoDir)
+    Set-RepositoryGitLineEndings -RepoPath $repoPath
 
     foreach ($patch in $script:PatchFiles) {
         Apply-PatchIfNeeded -RepoPath $repoPath -PatchPath $patch -AlwaysTry:$ForcePatch
@@ -391,7 +381,7 @@ function Main {
         }
     }
 
-    throw "All build attempts failed. Last error: $lastErrorMessage"
+    throw "Bad news, chief: all build attempts failed. Last error: $lastErrorMessage"
 }
 
 Main
